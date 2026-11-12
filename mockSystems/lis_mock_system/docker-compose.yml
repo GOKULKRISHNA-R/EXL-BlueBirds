@@ -1,0 +1,21 @@
+services:
+  lis-db:
+    image: postgres:16-alpine
+    container_name: lis-mock-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lis}
+      POSTGRES_USER: ${POSTGRES_USER:-lis_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lis_dev_password_change_me}
+    ports:
+      - "${LIS_DB_PORT:-5433}:5432"
+    volumes:
+      - lis_postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lis_app} -d ${POSTGRES_DB:-lis}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+volumes:
+  lis_postgres_data:

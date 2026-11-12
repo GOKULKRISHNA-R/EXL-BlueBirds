@@ -1,0 +1,284 @@
+{
+  "Patient": [
+    {
+      "resourceType": "Patient",
+      "id": "ehr-pat-001",
+      "identifier": [
+        {
+          "system": "https://mock-hospital.example/mrn",
+          "value": "MRN-00123"
+        }
+      ],
+      "active": true,
+      "name": [
+        {
+          "family": "Smith",
+          "given": [
+            "John"
+          ]
+        }
+      ],
+      "gender": "male",
+      "birthDate": "1995-05-10"
+    },
+    {
+      "resourceType": "Patient",
+      "id": "ehr-pat-002",
+      "identifier": [
+        {
+          "system": "https://mock-hospital.example/mrn",
+          "value": "MRN-00456"
+        }
+      ],
+      "active": true,
+      "name": [
+        {
+          "family": "Khan",
+          "given": [
+            "Aisha"
+          ]
+        }
+      ],
+      "gender": "female",
+      "birthDate": "1988-11-22"
+    },
+    {
+      "resourceType": "Patient",
+      "id": "ehr-pat-003",
+      "identifier": [
+        {
+          "system": "https://mock-hospital.example/mrn",
+          "value": "MRN-00789"
+        }
+      ],
+      "active": true,
+      "name": [
+        {
+          "family": "Murphy",
+          "given": [
+            "Sofia"
+          ]
+        }
+      ],
+      "gender": "female",
+      "birthDate": "2001-02-14"
+    }
+  ],
+  "Encounter": [
+    {
+      "resourceType": "Encounter",
+      "id": "ehr-enc-001",
+      "status": "finished",
+      "class": {
+        "code": "AMB",
+        "display": "ambulatory"
+      },
+      "subject": {
+        "reference": "Patient/ehr-pat-001"
+      },
+      "period": {
+        "start": "2026-10-12T09:00:00Z",
+        "end": "2026-10-12T09:35:00Z"
+      }
+    },
+    {
+      "resourceType": "Encounter",
+      "id": "ehr-enc-002",
+      "status": "in-progress",
+      "class": {
+        "code": "IMP",
+        "display": "inpatient"
+      },
+      "subject": {
+        "reference": "Patient/ehr-pat-002"
+      },
+      "period": {
+        "start": "2026-11-11T14:00:00Z"
+      }
+    }
+  ],
+  "Condition": [
+    {
+      "resourceType": "Condition",
+      "id": "ehr-cond-001",
+      "clinicalStatus": {
+        "coding": [
+          {
+            "code": "active"
+          }
+        ]
+      },
+      "code": {
+        "coding": [
+          {
+            "system": "http://snomed.info/sct",
+            "code": "44054006",
+            "display": "Type 2 diabetes mellitus"
+          }
+        ]
+      },
+      "subject": {
+        "reference": "Patient/ehr-pat-001"
+      }
+    },
+    {
+      "resourceType": "Condition",
+      "id": "ehr-cond-002",
+      "clinicalStatus": {
+        "coding": [
+          {
+            "code": "resolved"
+          }
+        ]
+      },
+      "code": {
+        "coding": [
+          {
+            "system": "http://snomed.info/sct",
+            "code": "38341003",
+            "display": "Hypertensive disorder"
+          }
+        ]
+      },
+      "subject": {
+        "reference": "Patient/ehr-pat-002"
+      }
+    }
+  ],
+  "MedicationRequest": [
+    {
+      "resourceType": "MedicationRequest",
+      "id": "ehr-med-001",
+      "status": "active",
+      "intent": "order",
+      "medicationCodeableConcept": {
+        "text": "Metformin 500 mg tablet"
+      },
+      "subject": {
+        "reference": "Patient/ehr-pat-001"
+      },
+      "authoredOn": "2026-10-12",
+      "dosageInstruction": [
+        {
+          "text": "Take one tablet twice daily"
+        }
+      ]
+    },
+    {
+      "resourceType": "MedicationRequest",
+      "id": "ehr-med-002",
+      "status": "completed",
+      "intent": "order",
+      "medicationCodeableConcept": {
+        "text": "Example antihypertensive 5 mg tablet"
+      },
+      "subject": {
+        "reference": "Patient/ehr-pat-002"
+      },
+      "authoredOn": "2026-09-01",
+      "dosageInstruction": [
+        {
+          "text": "Take one tablet once daily"
+        }
+      ]
+    }
+  ],
+  "Observation": [
+    {
+      "resourceType": "Observation",
+      "id": "ehr-obs-001",
+      "status": "final",
+      "category": [
+        {
+          "coding": [
+            {
+              "code": "vital-signs"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "coding": [
+          {
+            "system": "http://loinc.org",
+            "code": "8867-4",
+            "display": "Heart rate"
+          }
+        ]
+      },
+      "subject": {
+        "reference": "Patient/ehr-pat-001"
+      },
+      "effectiveDateTime": "2026-10-12T09:10:00Z",
+      "valueQuantity": {
+        "value": 78,
+        "unit": "beats/minute",
+        "code": "/min"
+      }
+    },
+    {
+      "resourceType": "Observation",
+      "id": "ehr-obs-002",
+      "status": "final",
+      "category": [
+        {
+          "coding": [
+            {
+              "code": "vital-signs"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "coding": [
+          {
+            "system": "http://loinc.org",
+            "code": "8480-6",
+            "display": "Systolic blood pressure"
+          }
+        ]
+      },
+      "subject": {
+        "reference": "Patient/ehr-pat-002"
+      },
+      "effectiveDateTime": "2026-11-11T14:15:00Z",
+      "valueQuantity": {
+        "value": 122,
+        "unit": "mmHg",
+        "code": "mm[Hg]"
+      }
+    },
+    {
+      "resourceType": "Observation",
+      "id": "ehr-obs-003",
+      "status": "final",
+      "category": [
+        {
+          "coding": [
+            {
+              "code": "vital-signs"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "coding": [
+          {
+            "system": "http://loinc.org",
+            "code": "59408-5",
+            "display": "Oxygen saturation by pulse oximetry"
+          }
+        ]
+      },
+      "subject": {
+        "reference": "Patient/ehr-pat-003"
+      },
+      "effectiveDateTime": "2026-11-10T08:00:00Z",
+      "valueQuantity": {
+        "value": 98,
+        "unit": "%",
+        "code": "%"
+      }
+    }
+  ]
+}
