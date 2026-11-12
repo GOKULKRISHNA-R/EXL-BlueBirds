@@ -1,0 +1,21 @@
+services:
+  orthanc:
+    image: orthancteam/orthanc:26.11.0
+    container_name: pacs-mock-orthanc
+    restart: unless-stopped
+    ports:
+      - "${ORTHANC_HTTP_PORT:-8042}:8042"
+      - "${ORTHANC_DICOM_PORT:-4242}:4242"
+    environment:
+      ORTHANC__NAME: "EXL Hackathon Mock PACS"
+      ORTHANC__REMOTE_ACCESS_ALLOWED: "true"
+      ORTHANC__AUTHENTICATION_ENABLED: "true"
+      ORTHANC__REGISTERED_USERS: '{"pacs_user":"${ORTHANC_PASSWORD:-pacs_dev_password_change_me}"}'
+      ORTHANC__DICOM_AET: "EXLPACS"
+      ORTHANC__DICOM_PORT: "4242"
+      DICOM_WEB_PLUGIN_ENABLED: "true"
+    volumes:
+      - orthanc_storage:/var/lib/orthanc/db
+
+volumes:
+  orthanc_storage:

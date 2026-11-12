@@ -1,0 +1,5 @@
+.env
+.venv/
+__pycache__/
+data/synthetic_png/*
+!data/synthetic_png/.gitkeep
