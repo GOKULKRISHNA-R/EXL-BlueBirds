@@ -12,7 +12,7 @@ Standalone synthetic Laboratory Information System for the EXL healthcare integr
 
 ## Start
 ```powershell
-Copy-Item .env.example .env
+
 docker compose up -d
 docker compose ps
 ```

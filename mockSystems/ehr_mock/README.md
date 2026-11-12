@@ -14,7 +14,7 @@ Standalone synthetic EHR source for the EXL × UCD hackathon. Independent of AI 
 
 ## Run with Docker
 ```bash
-cp .env.example .env
+
 # Change EHR_API_TOKEN before exposing beyond localhost.
 docker compose up --build
 ```
@@ -31,7 +31,7 @@ curl -H "Authorization: Bearer dev-ehr-token-change-me" \
 python -m venv .venv
 source .venv/bin/activate       # Windows: .venv\\Scripts\\activate
 pip install -r requirements-dev.txt
-cp .env.example .env
+
 uvicorn app.main:app --reload
 ```
 Run tests with `pytest -q`.

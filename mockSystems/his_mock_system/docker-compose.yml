@@ -1,0 +1,17 @@
+services:
+  his-mllp:
+    build: .
+    container_name: his-mock-mllp
+    restart: unless-stopped
+    ports:
+      - "${MLLP_PORT:-2575}:2575"
+    environment:
+      MLLP_HOST: "0.0.0.0"
+      MLLP_PORT: "2575"
+      DB_PATH: "/app/data/his_messages.db"
+      HIS_SYSTEM_NAME: "EXL-MOCK-HIS"
+    volumes:
+      - his_data:/app/data
+
+volumes:
+  his_data:

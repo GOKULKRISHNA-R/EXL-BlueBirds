@@ -1,0 +1,30 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: rpm-mock-mosquitto
+    restart: unless-stopped
+    ports:
+      - "${MQTT_PORT:-1883}:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+
+  collector:
+    build: .
+    container_name: rpm-mock-collector
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+    environment:
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "1883"
+      MQTT_TOPIC: "exl/rpm/+/vitals"
+      DB_PATH: /app/data/rpm_vitals.db
+    volumes:
+      - rpm_data:/app/data
+
+volumes:
+  mosquitto_data:
+  mosquitto_log:
+  rpm_data:

@@ -30,7 +30,7 @@ No virtual environment or `pip install` is required.
 Run these commands from this project folder:
 
 ```powershell
-Copy-Item .env.example .env
+
 docker compose up -d
 docker compose ps
 docker logs pacs-mock-orthanc

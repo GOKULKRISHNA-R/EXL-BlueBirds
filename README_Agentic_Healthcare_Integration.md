@@ -470,7 +470,6 @@ agentic-healthcare-integration/
 │   ├── benchmark_results/
 │   └── scripts/
 ├── demo/
-└── .env.example
 ```
 
 This is a suggested structure; adjust it to the team's language and
