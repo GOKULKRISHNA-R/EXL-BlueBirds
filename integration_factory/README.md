@@ -12,8 +12,19 @@ Adds a Python integration platform beside the five existing mock systems. It doe
 - Deterministic mapping/design stage with optional schema-constrained OpenAI structured-output mapping proposals, FHIR-aligned patient context, validation, generated artefacts and human approval gates.
 - FastAPI API and dashboard.
 
-## Important agent status
-The workflow is deterministic by default. If `OPENAI_API_KEY` is configured, the Design Agent can request schema-constrained mapping proposals from an OpenAI-compatible Chat Completions endpoint. Responses are Pydantic-validated and fall back safely to deterministic mappings on failure. This is limited LLM-assisted design, not yet a fully autonomous multi-agent LangGraph system. Generated code is never executed automatically.
+## Agent pipeline
+`POST /api/agentic-runs` (or the dashboard button) runs four agents behind one orchestrator and records every step in a trace:
+
+1. **Discovery Agent** (`discovery.py`) inspects each system: live endpoint when it answers (EHR `/metadata`, LIS `information_schema`, Orthanc `/system`, HIS MLLP port), otherwise the artefacts the system ships with (seed JSON, SQL DDL, HL7 samples, JSONL telemetry). Each profile says which was used.
+2. **Design Agent** picks an integration pattern per system and proposes field mappings with a confidence and rationale. Every mapping is grounded: a source field that discovery did not find is rejected before code generation.
+3. **Code Generation Agent** writes one adapter per source (LIS → Observation, HIS → Patient, RPM → Observation).
+4. **Validation Agent** scans the code statically, runs it in an isolated subprocess on real, malformed and empty records, and reconciles every output field against an independently computed expected value. Failures go back to the Code Generation Agent (up to 3 attempts).
+5. The run then **stops for human approval** (mappings, then release).
+
+`inject_fault=true` plants a labelled defect in the first HIS adapter so the catch-and-repair loop can be demonstrated.
+
+### LLM status (read before claiming anything in the deck)
+Without `OPENAI_API_KEY`, design and code generation use deterministic rules and templates, and the trace labels them `deterministic`. With a key, the Design Agent and Code Generation Agent (including repair) call an OpenAI-compatible endpoint with schema-constrained output, labelled `llm`; the same grounding, sandbox and reconciliation guardrails apply, and any failed call falls back to the deterministic path. **The LLM path has not been exercised yet because no key was available during development — run it once with a key before the demo.**
 
 ## Run locally
 From this folder:
@@ -35,7 +46,8 @@ Offline demo uses only bundled synthetic data; it does not require Docker, a dat
 ## API
 - `GET /health`
 - `GET /api/systems`
-- `POST /api/runs?patient_id=ehr-pat-001`
+- `POST /api/agentic-runs?patient_id=ehr-pat-001&inject_fault=false` — full agent pipeline
+- `POST /api/runs?patient_id=ehr-pat-001` — original single-pass workflow
 - `GET /api/runs`, `GET /api/runs/{run_id}`
 - `POST /api/runs/{run_id}/approve-mapping`
 - `POST /api/runs/{run_id}/approve-release`
@@ -46,7 +58,7 @@ Offline demo uses only bundled synthetic data; it does not require Docker, a dat
 - EHR↔LIS mapping uses the crosswalk explicitly documented in the supplied mock README. HIS is corroborated by DOB and given/family name; names are never used alone.
 - RPM readings are not attached to any patient because no explicit crosswalk exists in the repository.
 - PACS contributes data only if Orthanc has studies uploaded.
-- Generated Python is a reviewable template and is not executed by this service.
+- Generated adapters are executed only inside the validation sandbox (separate isolated interpreter, static safety scan first, 10 s timeout). This is process isolation, not a hardened container.
 - Mapping and release approvals are separate gates.
 - This is not a certified FHIR server or production healthcare platform.
 

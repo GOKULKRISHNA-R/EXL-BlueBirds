@@ -16,6 +16,7 @@ class Profile(BaseModel):
     discovered_fields: list[dict[str, Any]] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
+    discovery_mode: str = "offline_artefact"
 
 class MappingProposal(BaseModel):
     source_system: str
@@ -31,16 +32,12 @@ class Check(BaseModel):
     severity: str
     detail: str
 
+CROSSWALK={"ehr-pat-001":"LIS-P-1001", "ehr-pat-002":"LIS-P-2044", "ehr-pat-003":"LIS-P-3098"}
+
 def discover() -> list[Profile]:
-    seed = json.loads((MOCK_DIR / "ehr_mock/app/data/seed.json").read_text())
-    fields = [{"name": k, "type": type(v).__name__} for k, v in seed["Patient"][0].items()]
-    return [
-      Profile(system_id="ehr", name="Mock EHR", interface="FHIR R4-style REST/JSON", connectivity="HTTP :8000 /metadata and /fhir/*", capabilities=["Patient", "Encounter", "Condition", "Observation", "MedicationRequest"], discovered_fields=fields, evidence=["ehr_mock/README.md", "ehr_mock/app/data/seed.json"], limitations=["Limited FHIR subset; read-only; not certified"]),
-      Profile(system_id="lis", name="Mock LIS", interface="PostgreSQL relational SQL", connectivity="PostgreSQL :5433; v_lab_results_detail", capabilities=["patients", "lab_orders", "lab_results", "LOINC"], discovered_fields=[{"name":"patient_id","type":"varchar"},{"name":"date_of_birth","type":"date"},{"name":"loinc_code","type":"varchar"},{"name":"result_value","type":"numeric"}], evidence=["lis_mock_system/db/init/001_schema.sql", "002_seed.sql"], limitations=["Direct DB access is a mock-only adapter"]),
-      Profile(system_id="his", name="Mock HIS", interface="HL7 v2.x over MLLP/TCP", connectivity="TCP :2575", capabilities=["ADT^A01", "ORM^O01", "ORU^R01", "ACK"], discovered_fields=[{"name":"PID-3","type":"CX"},{"name":"PID-5","type":"XPN"},{"name":"PID-7","type":"TS"},{"name":"OBX","type":"observation"}], evidence=["his_mock_system/samples/*.hl7"], limitations=["Limited message support; not a full HL7 engine"]),
-      Profile(system_id="pacs", name="Mock PACS", interface="Orthanc REST + DICOM/DICOMweb", connectivity="HTTP :8042; DICOM :4242", capabilities=["studies", "series", "instances", "DICOM metadata"], discovered_fields=[{"name":"PatientID","tag":"0010,0020"},{"name":"IssuerOfPatientID","tag":"0010,0021"},{"name":"StudyInstanceUID","tag":"0020,000D"}], evidence=["pacs_mock_system/README.md"], limitations=["Synthetic image pixels; service may be empty"]),
-      Profile(system_id="rpm", name="Mock RPM", interface="MQTT 3.1.1 + JSON", connectivity="Mosquitto :1883; exl/rpm/{device_id}/vitals", capabilities=["heart_rate_bpm", "spo2_percent", "temperature_c"], discovered_fields=[{"name":"patient_id","type":"string"},{"name":"timestamp","type":"datetime"},{"name":"heart_rate_bpm","type":"number"}], evidence=["rpm_mock_system/samples/vitals.jsonl"], limitations=["No documented crosswalk for sample RPM patient IDs"])
-    ]
+    """Profiles are built by inspecting each system (live endpoint, else shipped artefacts)."""
+    from .discovery import discover_profiles
+    return [Profile(**p) for p in discover_profiles()]
 
 def parse_insert(statement: str) -> list[list[str]]:
     match = re.search(r"VALUES\s*(.*?);", statement, re.S | re.I)
@@ -167,8 +164,8 @@ def propose_mappings_with_ai(profiles):
     except Exception:
         return propose_mappings(), "deterministic_fallback"
 
-def run_workflow(patient_id: str="ehr-pat-001") -> dict:
-    crosswalk={"ehr-pat-001":"LIS-P-1001", "ehr-pat-002":"LIS-P-2044", "ehr-pat-003":"LIS-P-3098"}
+def run_workflow(patient_id: str="ehr-pat-001", use_llm: bool=True) -> dict:
+    crosswalk=CROSSWALK
     if patient_id not in crosswalk: raise ValueError("No documented synthetic EHR↔LIS crosswalk for this patient.")
     patient=get_ehr_patient(patient_id); lis=get_lis_results(crosswalk[patient_id])
     his_path=MOCK_DIR/"his_mock_system/samples/adt_a01.hl7"; his=parse_hl7_patient(his_path)
@@ -190,7 +187,7 @@ def run_workflow(patient_id: str="ehr-pat-001") -> dict:
         observations.append(item)
     studies=get_pacs_studies(); rpm=get_rpm_readings()
     profiles=discover()
-    mappings,mapping_mode=propose_mappings_with_ai(profiles)
+    mappings,mapping_mode=propose_mappings_with_ai(profiles) if use_llm else (propose_mappings(),"deterministic_fallback")
     imaging=[{"study_instance_uid":x.get("MainDicomTags",{}).get("StudyInstanceUID"),"accession_number":x.get("MainDicomTags",{}).get("AccessionNumber"),"source":"PACS"} for x in studies]
     context={"resourceType":"Bundle","type":"collection","patient":{"resourceType":"Patient","id":patient_id,"identifier":patient.get("identifier",[]),"name":[name],"birthDate":patient["birthDate"],"gender":patient.get("gender"),"source":"EHR"},"identity_links":[{"system":"EHR","id":patient_id},{"system":"LIS","id":crosswalk[patient_id],"basis":"documented synthetic crosswalk + DOB/name corroboration"},{"system":"HIS","id":his["patient_id"],"basis":"DOB + given/family name corroboration"}],"observations":observations,"imaging_studies":imaging,"unlinked_rpm_readings":[{"patient_id":r["patient_id"],"device_id":r["device_id"],"timestamp":r["timestamp"],"reason":"No documented crosswalk in supplied mock data; not merged"} for r in rpm],"provenance":{"sources":["EHR","LIS","HIS"]+(["PACS"] if studies else [])+["RPM (unlinked)"],"generated_at":datetime.now(timezone.utc).isoformat()}}
     checks=[

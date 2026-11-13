@@ -1,5 +1,105 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>EXL Integration Factory</title><style>body{font:15px system-ui;background:#f3f6fa;color:#182638;margin:0}header{background:#142b43;color:white;padding:24px 5vw}main{max-width:1050px;margin:24px auto;padding:0 18px}.card{background:white;border:1px solid #dce4ee;border-radius:12px;padding:18px;margin:12px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}.muted{color:#63758a;font-size:13px}button{padding:10px 15px;background:#1769aa;color:white;border:0;border-radius:7px;margin:4px;cursor:pointer}pre{background:#122235;color:#d9e8f6;padding:14px;border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto}</style></head><body><header><h1>Agentic Healthcare Integration Factory</h1>EXL × UCD · Challenge 01 · Synthetic-data prototype</header><main><section class="card"><h2>Discovered mock systems</h2><div id="systems" class="grid">Loading…</div></section><section class="card"><h2>Run integration</h2><p class="muted">Builds a FHIR-aligned patient context from EHR + LIS + HIS. PACS is queried if online. RPM stays unlinked until an approved identity crosswalk exists.</p><button onclick="run()">Run for John Smith</button><span id="status" class="muted"></span></section><div id="result"></div></main><script>
-async function load(){let a=await fetch('/api/systems').then(r=>r.json());document.getElementById('systems').innerHTML=a.map(x=>`<div class="card"><b>${x.name}</b><p>${x.interface}</p><div class="muted">${x.connectivity}</div></div>`).join('')}
-async function run(){document.getElementById('status').textContent='Working…';let r=await fetch('/api/runs',{method:'POST'}),d=await r.json();if(!r.ok){document.getElementById('status').textContent=d.detail;return}document.getElementById('status').textContent=d.status;document.getElementById('result').innerHTML=`<section class="card"><h2>${d.run_id}</h2><p>${d.status} · ${d.validation.summary}</p><h3>Validation</h3>${d.validation.checks.map(c=>`<p>${c.passed?'✓':'✕'} ${c.name}: ${c.detail}</p>`).join('')}<button onclick="approve('${d.run_id}','approve-mapping')">Approve mappings</button><button onclick="approve('${d.run_id}','approve-release')">Approve release</button><h3>Unified patient context</h3><pre>${JSON.stringify(d.patient_context,null,2)}</pre><h3>Integration plan</h3><pre>${JSON.stringify(d.plan,null,2)}</pre></section>`}
-async function approve(id,step){let r=await fetch(`/api/runs/${id}/${step}`,{method:'POST'}),d=await r.json();alert(r.ok?d.status:d.detail)}load();
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EXL Integration Factory</title>
+<style>
+:root{--bg:#f3f6fa;--card:#fff;--line:#dce4ee;--ink:#182638;--muted:#63758a;--brand:#1769aa;--head:#142b43;--ok:#1a7f4b;--bad:#b3261e;--warn:#9a6700;--code:#122235}
+*{box-sizing:border-box}
+body{font:15px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--ink);margin:0}
+header{background:var(--head);color:#fff;padding:22px 5vw}header h1{margin:0 0 4px;font-size:24px}
+main{max-width:1100px;margin:20px auto;padding:0 16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin:12px 0}
+h2{margin:0 0 12px;font-size:18px}h3{margin:18px 0 8px;font-size:15px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+.tile{border:1px solid var(--line);border-radius:10px;padding:12px}
+.muted{color:var(--muted);font-size:13px}
+.num{font-size:22px;font-weight:650}
+button{padding:10px 15px;background:var(--brand);color:#fff;border:0;border-radius:7px;margin:4px 6px 4px 0;cursor:pointer;font:inherit}
+button.alt{background:#fff;color:var(--brand);border:1px solid var(--brand)}button:disabled{opacity:.5;cursor:default}
+select{padding:9px;border:1px solid var(--line);border-radius:7px;font:inherit;margin-right:6px}
+.tag{display:inline-block;font-size:12px;padding:2px 8px;border-radius:99px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.tag.llm{color:#5b3cc4;border-color:#c9bdf2}.tag.fault_injected{color:var(--bad);border-color:#f0b9b5}
+.step{display:grid;grid-template-columns:30px 1fr;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
+.step:first-child{border-top:0}
+.dot{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:13px;background:var(--ok)}
+.dot.fail{background:var(--bad)}
+.agent{font-weight:650}
+.wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{text-align:left;padding:7px 9px;border-top:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:600;border-top:0}
+code,pre{font:12.5px ui-monospace,Menlo,monospace}
+pre{background:var(--code);color:#d9e8f6;padding:14px;border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:380px;overflow:auto;margin:8px 0}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+.status{font-weight:650;padding:4px 10px;border-radius:7px;background:#e8f0f8}
+details{border-top:1px solid var(--line);padding:8px 0}summary{cursor:pointer;font-weight:600}
+</style></head>
+<body>
+<header><h1>Agentic Healthcare Integration Factory</h1>EXL × UCD · Challenge 01 · Synthetic data only</header>
+<main>
+<section class="card"><h2>Systems found by the Discovery Agent</h2><div id="systems" class="grid">Loading…</div></section>
+<section class="card"><h2>Run the agent pipeline</h2>
+  <p class="muted">Discover → design mappings and pattern → generate adapters → test in a sandbox and repair → stop for human approval.</p>
+  <select id="patient"><option value="ehr-pat-001">John Smith (ehr-pat-001)</option></select>
+  <button id="go" onclick="run(false)">Run agent pipeline</button>
+  <button id="fault" class="alt" onclick="run(true)">Run with an injected defect</button>
+  <span id="status" class="muted"></span>
+</section>
+<div id="result"></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const tag=m=>`<span class="tag ${esc(m)}">${esc(String(m).replace(/_/g,' '))}</span>`;
+let current=null;
+
+async function load(){
+  const systems=await fetch('/api/systems').then(r=>r.json());
+  $('systems').innerHTML=systems.map(s=>`<div class="tile"><b>${esc(s.name)}</b> ${tag(s.discovery_mode)}<div>${esc(s.interface)}</div>
+    <div class="muted">${s.discovered_fields.length} fields · ${esc(s.evidence[0])}</div></div>`).join('');
+}
+
+async function run(fault){
+  $('go').disabled=$('fault').disabled=true; $('status').textContent='Agents working…';
+  const r=await fetch(`/api/agentic-runs?patient_id=${$('patient').value}&inject_fault=${fault}`,{method:'POST'}), d=await r.json();
+  $('go').disabled=$('fault').disabled=false;
+  if(!r.ok){$('status').textContent=d.detail;return}
+  $('status').textContent=''; current=d; render();
+}
+
+function render(){
+  const d=current, m=d.metrics, approved=d.approvals;
+  const tiles=[[m.elapsed_seconds+' s','end-to-end run'],[m.fields_discovered,'fields discovered in '+m.systems_discovered+' systems'],
+    [m.mappings_grounded,'mappings grounded ('+m.mappings_rejected+' rejected)'],[m.adapters_generated,'adapters generated'],
+    [m.checks_passed+'/'+m.checks_total,'validation checks passed'],[m.field_values_reconciled,'field values reconciled'],
+    [m.repair_attempts,'repair attempts'],[m.llm_calls,'LLM calls']];
+  $('result').innerHTML=`
+  <section class="card"><h2>${esc(d.run_id)} <span class="status">${esc(d.status.replace(/_/g,' '))}</span></h2>
+    <div class="muted">Mode: ${esc(m.mode)}${m.llm_model?' · model '+esc(m.llm_model):''}</div>
+    <div class="grid" style="margin-top:12px">${tiles.map(t=>`<div class="tile"><div class="num">${esc(t[0])}</div><div class="muted">${esc(t[1])}</div></div>`).join('')}</div>
+    <h3>Human approval gates</h3>
+    <button onclick="approve('approve-mapping')" ${approved.mapping_approved?'disabled':''}>${approved.mapping_approved?'✓ Mappings approved':'1. Approve mappings'}</button>
+    <button onclick="approve('approve-release')" ${approved.release_approved?'disabled':''}>${approved.release_approved?'✓ Release approved':'2. Approve release'}</button>
+    <span id="gate" class="muted"></span>
+  </section>
+  <section class="card"><h2>Agent trace</h2>${d.trace.map(e=>`<div class="step"><div class="dot ${e.ok?'':'fail'}">${e.ok?'✓':'✕'}</div>
+    <div><span class="agent">${esc(e.agent)}</span> · ${esc(e.action)} ${tag(e.mode)} <span class="muted">${e.ms} ms</span>
+    <div class="${e.ok?'muted':'bad'}">${esc(e.detail)}</div></div></div>`).join('')}</section>
+  <section class="card"><h2>Integration patterns chosen</h2><div class="wrap"><table><tr><th>System</th><th>Interface</th><th>Pattern</th><th>Why</th></tr>
+    ${d.plan.patterns.map(p=>`<tr><td><b>${esc(p.system)}</b></td><td>${esc(p.interface)}</td><td>${esc(p.pattern)}</td><td class="muted">${esc(p.rationale)}</td></tr>`).join('')}</table></div></section>
+  <section class="card"><h2>Field mappings for review</h2><div class="wrap"><table><tr><th>System</th><th>Source field</th><th>FHIR target</th><th>Transform</th><th>Confidence</th><th>Rationale</th></tr>
+    ${d.plan.mappings.map(x=>`<tr><td>${esc(x.source_system)}</td><td><code>${esc(x.source_field)}</code></td><td><code>${esc(x.target_path)}</code></td><td>${esc(x.transform)}</td>
+      <td>${Math.round(x.confidence*100)}%${x.requires_review?' <span class="warn">⚠ review</span>':''}</td><td class="muted">${esc(x.rationale)}</td></tr>`).join('')}
+    ${d.plan.rejected_mappings.map(x=>`<tr><td>${esc(x.source_system)}</td><td><code>${esc(x.source_field)}</code></td><td><code>${esc(x.target_path)}</code></td><td>${esc(x.transform)}</td>
+      <td class="bad">rejected</td><td class="bad">${esc(x.rejected_reason)}</td></tr>`).join('')}</table></div></section>
+  <section class="card"><h2>Generated adapters and their tests</h2>${d.agent_validation.map(r=>`<details><summary>${esc(r.system)} adapter —
+    <span class="${r.passed?'ok':'bad'}">${esc(r.summary)}</span> <span class="muted">(${r.attempts} attempt${r.attempts>1?'s':''})</span></summary>
+    ${r.checks.map(c=>`<div><span class="${c.passed?'ok':'bad'}">${c.passed?'✓':'✕'}</span> <b>${esc(c.name)}</b> <span class="muted">${esc(c.detail)}</span></div>`).join('')}
+    <pre>${esc(d.adapters[r.system])}</pre></details>`).join('')}</section>
+  <section class="card"><h2>Identity and data checks</h2>${d.validation.checks.map(c=>`<div><span class="${c.passed?'ok':'bad'}">${c.passed?'✓':'✕'}</span> <b>${esc(c.name)}</b> <span class="muted">${esc(c.detail)}</span></div>`).join('')}
+    <details style="margin-top:12px"><summary>Unified patient context (FHIR-aligned)</summary><pre>${esc(JSON.stringify(d.patient_context,null,2))}</pre></details></section>`;
+}
+
+async function approve(step){
+  const r=await fetch(`/api/runs/${current.run_id}/${step}`,{method:'POST'}), d=await r.json();
+  if(r.ok){current={...current,...d}; render()} else $('gate').textContent=d.detail;
+}
+load();
 </script></body></html>

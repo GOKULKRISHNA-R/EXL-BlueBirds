@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pathlib import Path
 from .core import discover, run_workflow
+from .agents import run_agentic
 app=FastAPI(title="EXL Agentic Healthcare Integration Factory",version="0.1.0",description="Synthetic-data prototype for EXL × UCD Challenge 01")
 RUNS={}
 @app.get("/health")
@@ -11,6 +12,11 @@ def systems(): return [x.model_dump() for x in discover()]
 @app.post("/api/runs")
 def create_run(patient_id: str="ehr-pat-001"):
     try: data=run_workflow(patient_id); RUNS[data["run_id"]]=data; return data
+    except Exception as exc: raise HTTPException(400,str(exc))
+@app.post("/api/agentic-runs")
+def create_agentic_run(patient_id: str="ehr-pat-001", inject_fault: bool=False):
+    """Full agent pipeline: discover -> design -> generate -> validate/repair -> stop for human approval."""
+    try: data=run_agentic(patient_id, inject_fault); RUNS[data["run_id"]]=data; return data
     except Exception as exc: raise HTTPException(400,str(exc))
 @app.get("/api/runs")
 def list_runs(): return list(RUNS.values())
