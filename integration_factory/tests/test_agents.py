@@ -1,5 +1,5 @@
 from fastapi.testclient import TestClient
-from integration_factory.agents import run_agentic, static_check, validation_agent, template_code, FALLBACK_MAPPINGS, sample_records
+from integration_factory.agents import run_agentic, static_check, validation_agent, template_code, FALLBACK_MAPPINGS, sample_records, _CIRCUIT_BREAKER, llm_json
 from integration_factory.api import app
 from integration_factory.core import discover
 
@@ -44,3 +44,45 @@ def test_agentic_api_and_gates():
     assert run["pipeline"] == "agentic" and set(run["adapters"]) == {"lis", "his", "rpm"}
     assert client.post(f"/api/runs/{run['run_id']}/approve-release").status_code == 409
     assert client.post(f"/api/runs/{run['run_id']}/approve-mapping").status_code == 200
+
+def test_circuit_breaker_trips_and_fails_fast():
+    _CIRCUIT_BREAKER.reset()
+    assert _CIRCUIT_BREAKER.state == "CLOSED"
+    assert _CIRCUIT_BREAKER.allow_request() is True
+
+    # Simulate 2 consecutive timeouts/failures
+    _CIRCUIT_BREAKER.record_failure("test timeout 1")
+    assert _CIRCUIT_BREAKER.state == "CLOSED"
+    _CIRCUIT_BREAKER.record_failure("test timeout 2")
+    assert _CIRCUIT_BREAKER.state == "OPEN"
+    assert _CIRCUIT_BREAKER.allow_request() is False
+
+    # When circuit is open, llm_json fails fast immediately
+    res = llm_json("dummy prompt", {}, "dummy_schema")
+    assert res is None
+
+    # Reset restores normal operation
+    _CIRCUIT_BREAKER.reset()
+    assert _CIRCUIT_BREAKER.state == "CLOSED"
+
+
+def test_failed_adapter_blocks_approval_then_reviewer_fix_unblocks():
+    client = TestClient(app)
+    run = client.post("/api/agentic-runs").json(); rid = run["run_id"]
+    broken = run["adapters"]["his"].replace("hl7_date_to_iso(record", "copy(record")
+    bad = client.put(f"/api/runs/{rid}/adapters/his/code", json={"code": broken}).json()
+    assert bad["status"] == "needs_correction" and not bad["validation"]["passed"]
+    blocked = client.post(f"/api/runs/{rid}/approve-mapping")
+    assert blocked.status_code == 409 and "his" in blocked.json()["detail"]
+    fixed = client.post(f"/api/runs/{rid}/adapters/his/retry?strategy=template").json()
+    assert fixed["status"] == "awaiting_human_approval" and fixed["validation"]["passed"]
+    assert client.post(f"/api/runs/{rid}/approve-mapping").status_code == 200
+    assert [a["action"] for a in fixed["audit"]] == ["manual_edit", "retry_template"]
+
+def test_run_survives_server_reload():
+    from integration_factory import api
+    client = TestClient(app)
+    rid = client.post("/api/agentic-runs").json()["run_id"]
+    api.RUNS.clear()
+    assert client.post(f"/api/runs/{rid}/approve-mapping").status_code == 200
+    assert client.get("/api/runs/run-does-not-exist").status_code == 404

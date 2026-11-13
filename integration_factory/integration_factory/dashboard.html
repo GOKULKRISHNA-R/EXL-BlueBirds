@@ -30,6 +30,20 @@ pre{background:var(--code);color:#d9e8f6;padding:14px;border-radius:8px;white-sp
 .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
 .status{font-weight:650;padding:4px 10px;border-radius:7px;background:#e8f0f8}
 details{border-top:1px solid var(--line);padding:8px 0}summary{cursor:pointer;font-weight:600}
+.steps{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 14px}
+.st{flex:1;min-width:120px;padding:8px 10px;border-radius:8px;border:1px solid var(--line);font-size:13px;color:var(--muted);background:#fff}
+.st b{display:block;color:var(--ink);font-size:13px}.st.done{border-color:#a9dcc0;background:#f0faf4}.st.done b{color:var(--ok)}
+.st.fail{border-color:#f0b9b5;background:#fdf1f0}.st.fail b{color:var(--bad)}.st.now{border-color:var(--brand);box-shadow:0 0 0 2px #cfe3f4}
+.banner{border-radius:10px;padding:14px 16px;border:1px solid;margin:10px 0}
+.banner h3{margin:0 0 6px;font-size:16px}.banner.bad{background:#fdf1f0;border-color:#f0b9b5}.banner.info{background:#eef5fc;border-color:#bcd7ee}
+.banner.good{background:#f0faf4;border-color:#a9dcc0}
+.fix{background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px;margin:10px 0}
+.fix input[type=text]{width:100%;padding:9px;border:1px solid var(--line);border-radius:7px;font:inherit;margin:6px 0}
+textarea.code{width:100%;min-height:260px;background:var(--code);color:#d9e8f6;border-radius:8px;padding:12px;font:12.5px ui-monospace,Menlo,monospace;border:0}
+button.danger{background:var(--bad)}button.green{background:var(--ok)}
+#toast{position:fixed;right:18px;bottom:18px;max-width:420px;padding:12px 16px;border-radius:9px;color:#fff;background:var(--head);box-shadow:0 6px 24px #0004;display:none;z-index:9}
+#toast.bad{background:var(--bad)}#toast.good{background:var(--ok)}
+.log td{font-size:13px}
 </style></head>
 <body>
 <header><h1>Agentic Healthcare Integration Factory</h1>EXL × UCD · Challenge 01 · Synthetic data only</header>
@@ -42,7 +56,7 @@ details{border-top:1px solid var(--line);padding:8px 0}summary{cursor:pointer;fo
   <button id="fault" class="alt" onclick="run(true)">Run with an injected defect</button>
   <span id="status" class="muted"></span>
 </section>
-<div id="result"></div>
+<div id="result"></div><div id="toast" role="status" aria-live="polite"></div>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -56,28 +70,70 @@ async function load(){
     <div class="muted">${s.discovered_fields.length} fields · ${esc(s.evidence[0])}</div></div>`).join('');
 }
 
+let tt; function toast(msg,kind){const t=$('toast'); t.textContent=msg; t.className=kind||''; t.style.display='block'; clearTimeout(tt); tt=setTimeout(()=>t.style.display='none',kind==='bad'?9000:4500)}
+async function call(url,opts,btn,busyText){
+  const old=btn&&btn.textContent; if(btn){btn.disabled=true; btn.textContent=busyText||'Working…'}
+  try{
+    const r=await fetch(url,opts), d=await r.json().catch(()=>({}));
+    if(!r.ok){ toast(typeof d.detail==='string'?d.detail:'Request failed ('+r.status+')','bad'); if(r.status===404&&current&&/Run not found/.test(d.detail||'')){current=null;$('result').innerHTML=''} return null }
+    return d;
+  }catch(e){toast('Network error: '+e.message,'bad'); return null}
+  finally{ if(btn){btn.disabled=false; btn.textContent=old} }
+}
+
 async function run(fault){
   $('go').disabled=$('fault').disabled=true; $('status').textContent='Agents working…';
-  const r=await fetch(`/api/agentic-runs?patient_id=${$('patient').value}&inject_fault=${fault}`,{method:'POST'}), d=await r.json();
-  $('go').disabled=$('fault').disabled=false;
-  if(!r.ok){$('status').textContent=d.detail;return}
-  $('status').textContent=''; current=d; render();
+  const d=await call(`/api/agentic-runs?patient_id=${$('patient').value}&inject_fault=${fault}`,{method:'POST'});
+  $('go').disabled=$('fault').disabled=false; $('status').textContent='';
+  if(d){current=d; render(); window.scrollTo({top:$('result').offsetTop-10,behavior:'smooth'})}
+}
+
+const failing=d=>(d.agent_validation||[]).filter(r=>!r.passed);
+function stepper(d){
+  const fails=failing(d).length>0, a=d.approvals, ok=d.validation.passed;
+  const steps=[['Discover','done'],['Design','done'],['Generate','done'],['Validate',fails||!ok?'fail':'done'],
+    ['Approve mappings',a.mapping_approved?'done':(ok?'now':'')],['Approve release',a.release_approved?'done':(a.mapping_approved?'now':'')]];
+  return `<div class="steps">${steps.map((x,n)=>`<div class="st ${x[1]}"><b>${n+1}. ${x[0]}</b>${x[1]==='done'?'Complete':x[1]==='fail'?'Needs correction':x[1]==='now'?'Your turn':'Waiting'}</div>`).join('')}</div>`;
+}
+function banner(d){
+  const f=failing(d), a=d.approvals;
+  if(f.length) return `<div class="banner bad"><h3>✕ Action required — ${f.map(r=>esc(r.system)).join(', ')} adapter${f.length>1?'s':''} failed validation</h3>
+    Nothing can be approved until this is fixed. Choose how to fix it in the panel${f.length>1?'s':''} below: ask the AI to try again (optionally with guidance), regenerate from the approved mappings (safe, deterministic), or edit the code yourself. Every fix is re-tested and logged.</div>`;
+  if(!d.validation.passed) return `<div class="banner bad"><h3>✕ Identity/data checks failed</h3>Review the failing checks under “Identity and data checks”. This needs a mapping or crosswalk change, so start a new run after correcting the source data.</div>`;
+  if(a.release_approved) return `<div class="banner good"><h3>✓ Approved for release</h3>Adapters, plan and reports are saved under <code>${esc((d.generated_artifacts[0]||'').split('/').slice(0,-2).join('/')||'artifacts/'+d.run_id)}</code>. The decision trail is in the audit log below.</div>`;
+  if(a.mapping_approved) return `<div class="banner info"><h3>Step 2 of 2 — approve the release</h3>Mappings are approved. Approving the release marks the adapters ready to deploy.</div>`;
+  return `<div class="banner info"><h3>Step 1 of 2 — review and approve the mappings</h3>All adapters passed their tests. Check the field mappings${d.metrics.mappings_flagged_for_review?` (<span class="warn">${d.metrics.mappings_flagged_for_review} flagged for review</span>)`:''}, then approve.</div>`;
+}
+function fixPanel(d,r){
+  const sys=esc(r.system), bad=r.checks.filter(c=>!c.passed);
+  return `<div class="fix"><b class="bad">✕ ${sys} adapter</b> <span class="muted">${esc(r.summary)} · ${r.attempts} attempt${r.attempts>1?'s':''} so far</span>
+    ${bad.map(c=>`<div><b>${esc(c.name)}</b><div class="muted">${esc(c.detail)}</div></div>`).join('')}
+    <input type="text" id="hint-${sys}" placeholder="Optional guidance for the AI, e.g. “return None when the date is not 8 digits”">
+    <button onclick="retry('${sys}','ai',this)">Retry with AI</button>
+    <button class="alt" onclick="retry('${sys}','template',this)">Regenerate from mappings (safe template)</button>
+    <button class="alt" onclick="$('edit-${sys}').open=true">Edit code manually</button>
+    <details id="edit-${sys}"><summary>Edit ${sys} adapter code</summary>
+      <textarea class="code" id="code-${sys}" spellcheck="false">${esc(d.adapters[r.system])}</textarea>
+      <button onclick="saveCode('${sys}',this)">Save and re-run tests</button> <span class="muted">Runs the same safety scan, sandbox and reconciliation checks.</span></details></div>`;
 }
 
 function render(){
-  const d=current, m=d.metrics, approved=d.approvals;
+  const d=current, m=d.metrics, approved=d.approvals, fails=failing(d);
+  const canApprove=d.validation.passed;
   const tiles=[[m.elapsed_seconds+' s','end-to-end run'],[m.fields_discovered,'fields discovered in '+m.systems_discovered+' systems'],
     [m.mappings_grounded,'mappings grounded ('+m.mappings_rejected+' rejected)'],[m.adapters_generated,'adapters generated'],
     [m.checks_passed+'/'+m.checks_total,'validation checks passed'],[m.field_values_reconciled,'field values reconciled'],
-    [m.repair_attempts,'repair attempts'],[m.llm_calls,'LLM calls']];
+    [m.repair_attempts,'automatic repair attempts'],[m.llm_calls,'LLM calls']];
   $('result').innerHTML=`
   <section class="card"><h2>${esc(d.run_id)} <span class="status">${esc(d.status.replace(/_/g,' '))}</span></h2>
     <div class="muted">Mode: ${esc(m.mode)}${m.llm_model?' · model '+esc(m.llm_model):''}</div>
-    <div class="grid" style="margin-top:12px">${tiles.map(t=>`<div class="tile"><div class="num">${esc(t[0])}</div><div class="muted">${esc(t[1])}</div></div>`).join('')}</div>
+    ${stepper(d)}${banner(d)}
+    ${fails.map(r=>fixPanel(d,r)).join('')}
     <h3>Human approval gates</h3>
-    <button onclick="approve('approve-mapping')" ${approved.mapping_approved?'disabled':''}>${approved.mapping_approved?'✓ Mappings approved':'1. Approve mappings'}</button>
-    <button onclick="approve('approve-release')" ${approved.release_approved?'disabled':''}>${approved.release_approved?'✓ Release approved':'2. Approve release'}</button>
-    <span id="gate" class="muted"></span>
+    <button class="green" id="b1" onclick="approve('approve-mapping',this)" ${approved.mapping_approved||!canApprove?'disabled':''}>${approved.mapping_approved?'✓ Mappings approved':'1. Approve mappings'}</button>
+    <button class="green" id="b2" onclick="approve('approve-release',this)" ${approved.release_approved||!approved.mapping_approved?'disabled':''}>${approved.release_approved?'✓ Release approved':'2. Approve release'}</button>
+    <div class="muted" style="margin-top:6px">${!canApprove?'Disabled: fix the failing validation above first.':!approved.mapping_approved?'Approve the mappings first; the release step unlocks after that.':!approved.release_approved?'':'Done.'}</div>
+    <div class="grid" style="margin-top:12px">${tiles.map(t=>`<div class="tile"><div class="num">${esc(t[0])}</div><div class="muted">${esc(t[1])}</div></div>`).join('')}</div>
   </section>
   <section class="card"><h2>Agent trace</h2>${d.trace.map(e=>`<div class="step"><div class="dot ${e.ok?'':'fail'}">${e.ok?'✓':'✕'}</div>
     <div><span class="agent">${esc(e.agent)}</span> · ${esc(e.action)} ${tag(e.mode)} <span class="muted">${e.ms} ms</span>
@@ -94,12 +150,23 @@ function render(){
     ${r.checks.map(c=>`<div><span class="${c.passed?'ok':'bad'}">${c.passed?'✓':'✕'}</span> <b>${esc(c.name)}</b> <span class="muted">${esc(c.detail)}</span></div>`).join('')}
     <pre>${esc(d.adapters[r.system])}</pre></details>`).join('')}</section>
   <section class="card"><h2>Identity and data checks</h2>${d.validation.checks.map(c=>`<div><span class="${c.passed?'ok':'bad'}">${c.passed?'✓':'✕'}</span> <b>${esc(c.name)}</b> <span class="muted">${esc(c.detail)}</span></div>`).join('')}
-    <details style="margin-top:12px"><summary>Unified patient context (FHIR-aligned)</summary><pre>${esc(JSON.stringify(d.patient_context,null,2))}</pre></details></section>`;
+    <details style="margin-top:12px"><summary>Unified patient context (FHIR-aligned)</summary><pre>${esc(JSON.stringify(d.patient_context,null,2))}</pre></details></section>
+  <section class="card"><h2>Audit log</h2>${(d.audit&&d.audit.length)?`<div class="wrap"><table class="log"><tr><th>When (UTC)</th><th>Who</th><th>Action</th><th>Detail</th></tr>${d.audit.map(a=>`<tr><td>${esc(a.at.replace('T',' '))}</td><td>${esc(a.actor)}</td><td>${esc(a.action.replace(/_/g,' '))}</td><td class="muted">${esc(a.detail)}</td></tr>`).join('')}</table></div>`:'<div class="muted">No reviewer actions yet.</div>'}</section>`;
 }
 
-async function approve(step){
-  const r=await fetch(`/api/runs/${current.run_id}/${step}`,{method:'POST'}), d=await r.json();
-  if(r.ok){current={...current,...d}; render()} else $('gate').textContent=d.detail;
+async function approve(step,btn){
+  const d=await call(`/api/runs/${current.run_id}/${step}`,{method:'POST'},btn,'Approving…');
+  if(d){current=d; render(); toast(step==='approve-mapping'?'Mappings approved. Now approve the release.':'Release approved.','good')}
+}
+async function retry(system,strategy,btn){
+  const hint=($('hint-'+system)||{}).value||'';
+  const q=`strategy=${strategy}`+(hint?`&hint=${encodeURIComponent(hint)}`:'');
+  const d=await call(`/api/runs/${current.run_id}/adapters/${system}/retry?${q}`,{method:'POST'},btn,strategy==='ai'?'Asking the AI…':'Regenerating…');
+  if(d){current=d; render(); const r=d.agent_validation.find(x=>x.system===system); toast(r.passed?`${system} adapter now passes all checks.`:`${system} adapter still failing: try another option.`,r.passed?'good':'bad')}
+}
+async function saveCode(system,btn){
+  const d=await call(`/api/runs/${current.run_id}/adapters/${system}/code`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:$('code-'+system).value})},btn,'Testing…');
+  if(d){current=d; render(); const r=d.agent_validation.find(x=>x.system===system); toast(r.passed?`${system} adapter now passes all checks.`:`${system} adapter still failing: ${r.checks.find(c=>!c.passed).detail}`,r.passed?'good':'bad')}
 }
 load();
 </script></body></html>

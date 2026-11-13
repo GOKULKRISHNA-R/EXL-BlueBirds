@@ -12,7 +12,8 @@ checked, executed only inside an isolated subprocess, and reconciled field by fi
 against an independent reference before a human is asked to approve anything.
 """
 from __future__ import annotations
-import ast, json, os, re, subprocess, sys, tempfile, time
+import ast, hashlib, json, os, re, subprocess, sys, tempfile, time
+from datetime import datetime, timezone
 from pathlib import Path
 import httpx
 from . import core
@@ -70,19 +71,195 @@ PATTERN_RULES = [
 def llm_available() -> bool:
     return bool(os.getenv("OPENAI_API_KEY", "").strip())
 
-def llm_json(prompt: str, schema: dict, name: str) -> dict | None:
-    """One schema-constrained call to an OpenAI-compatible endpoint. Returns None on any failure."""
+_LLM_LAST_CALL_AT: float = 0.0
+_LLM_MIN_INTERVAL: float = float(os.getenv("LLM_MIN_INTERVAL_S", "2"))  # default fast gap; adjust for free tiers
+
+
+class CircuitBreaker:
+    """Circuit Breaker for LLM integration.
+
+    Prevents cascading hangs and timeouts from freezing the integration pipeline.
+    - CLOSED: Normal operation. Requests are forwarded to the LLM.
+    - OPEN: Tripped after consecutive timeouts/errors. Fails fast (0ms) to
+      deterministic fallback without waiting or blocking.
+    - HALF-OPEN: After a cooldown period, allows a single probe request to check
+      if the LLM service has recovered.
+    """
+    def __init__(self, failure_threshold: int = 2, recovery_timeout_s: float = 45.0):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout_s = recovery_timeout_s
+        self.failure_count = 0
+        self.last_failure_time = 0.0
+        self.last_failure_reason = ""
+        self.state = "CLOSED"
+
+    def allow_request(self) -> bool:
+        if self.state == "OPEN":
+            if time.perf_counter() - self.last_failure_time > self.recovery_timeout_s:
+                self.state = "HALF-OPEN"
+                print(f"[CircuitBreaker HALF-OPEN] Cooldown ({self.recovery_timeout_s}s) elapsed. Probing endpoint health.")
+                return True
+            return False
+        return True
+
+    def record_success(self):
+        if self.state != "CLOSED":
+            print(f"[CircuitBreaker CLOSED] Probe succeeded. Circuit reset to normal.")
+        self.failure_count = 0
+        self.state = "CLOSED"
+        self.last_failure_reason = ""
+
+    def record_failure(self, reason: str = ""):
+        self.failure_count += 1
+        self.last_failure_time = time.perf_counter()
+        self.last_failure_reason = reason
+        if self.failure_count >= self.failure_threshold or self.state == "HALF-OPEN":
+            self.state = "OPEN"
+            print(f"[CircuitBreaker TRIPPED -> OPEN] {self.failure_count} consecutive failure(s): {reason}. Failing fast to deterministic fallback.")
+
+    def reset(self):
+        self.failure_count = 0
+        self.state = "CLOSED"
+        self.last_failure_reason = ""
+
+
+_CIRCUIT_BREAKER = CircuitBreaker(
+    failure_threshold=int(os.getenv("CIRCUIT_BREAKER_FAILURES", "2")),
+    recovery_timeout_s=float(os.getenv("CIRCUIT_BREAKER_COOLDOWN_S", "45"))
+)
+
+
+def _retry_secs(resp: httpx.Response) -> float:
+    """Read retryDelay from Gemini error body, or Retry-After header."""
+    ra = resp.headers.get("Retry-After", "")
+    if ra.isdigit():
+        return float(ra) + 1
+    try:
+        body = resp.json()
+        items = body if isinstance(body, list) else [body]
+        for item in items:
+            for detail in item.get("error", {}).get("details", []):
+                delay = detail.get("retryDelay", "")
+                if delay:
+                    return float(delay.rstrip("s")) + 2
+    except Exception:
+        pass
+    return 15.0
+
+
+def llm_json(prompt: str, schema: dict, name: str, model: str | None = None, fresh: bool = False) -> dict | None:
+    """Circuit-broken, rate-aware call to any OpenAI-compatible endpoint.
+
+    - Supports model tiering: passes a lightweight model for simpler tasks.
+    - Protects against hangs with an aggressive timeout (default 25s via LLM_TIMEOUT_S).
+    - Fails fast in 0ms when the Circuit Breaker is OPEN.
+    - Trips the Circuit Breaker after 2 consecutive failures to prevent cascading delays.
+    - Transparently falls back to deterministic code generation.
+    """
+    global _LLM_LAST_CALL_AT
     key = os.getenv("OPENAI_API_KEY", "").strip()
     if not key: return None
-    base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+
+    # Circuit Breaker check: fail fast if upstream model is broken or timing out
+    if not _CIRCUIT_BREAKER.allow_request():
+        print(f"[CircuitBreaker OPEN] Fast-failing LLM call '{name}' ({_CIRCUIT_BREAKER.last_failure_reason}). Using deterministic fallback.")
+        return None
+
+    base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/").removesuffix("/chat/completions")
+    target_model = model or os.getenv("OPENAI_MODEL", "qwen/qwen3.8-27b")
+    timeout_s = float(os.getenv("LLM_TIMEOUT_S", "25"))
+    min_interval = float(os.getenv("LLM_MIN_INTERVAL_S", "2"))
+
+    # Response cache: temperature is 0, so an identical (model, prompt, schema) is an exact repeat.
+    # Skips the network call, rate-limit sleep and tokens entirely. Off in tests or with LLM_CACHE=0.
+    cache_file = None
+    if os.getenv("LLM_CACHE", "1") != "0" and not os.getenv("PYTEST_CURRENT_TEST"):
+        digest = hashlib.sha256(json.dumps([target_model, name, prompt, schema], sort_keys=True).encode()).hexdigest()
+        cache_file = ARTIFACTS_DIR / ".llm_cache" / f"{digest}.json"
+        try:
+            if not fresh:  # reviewer-requested retries must not replay a cached (failing) answer
+                hit = json.loads(cache_file.read_text())
+                print(f"[LLM cache hit] '{name}'")
+                return hit
+        except Exception:
+            pass
+
+    # Enforce rate-limit gap (skipped during tests)
+    in_test = bool(os.getenv("PYTEST_CURRENT_TEST"))
+    if not in_test and min_interval > 0:
+        gap = time.perf_counter() - _LLM_LAST_CALL_AT
+        if gap < min_interval:
+            wait = min_interval - gap
+            time.sleep(wait)
+
+    payload = {
+        "model": target_model, "temperature": 0,
+        "messages": [{"role": "user", "content": prompt}],
+        "response_format": {"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}},
+    }
+
+    # Effort parameter: cap hidden reasoning tokens so structured JSON isn't starved of output budget
+    # (Groq returns json_validate_failed with an empty generation otherwise). Override: LLM_REASONING_EFFORT.
+    effort = os.getenv("LLM_REASONING_EFFORT", "").strip()
+    if not effort and "groq.com" in base:
+        effort = "low" if "gpt-oss" in target_model else "none" if "qwen" in target_model else ""
+    if effort:
+        payload["reasoning_effort"] = effort
+
+    # Explicit output cap: providers estimate OTPM from max_tokens (or the model default), so an
+    # unset value can exceed a low tier limit (Groq on_demand: 1000 OTPM) and be rejected with 429.
+    max_tokens = os.getenv("LLM_MAX_TOKENS", "").strip() or ("900" if "groq.com" in base else "")
+    if max_tokens:
+        payload["max_tokens"] = int(max_tokens)
+
+    _LLM_LAST_CALL_AT = time.perf_counter()
     try:
-        response = httpx.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {key}"}, timeout=40, json={
-            "model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini"), "temperature": 0,
-            "messages": [{"role": "user", "content": prompt}],
-            "response_format": {"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}}})
-        response.raise_for_status()
-        return json.loads(response.json()["choices"][0]["message"]["content"])
-    except Exception:
+        resp = httpx.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {key}"}, timeout=timeout_s, json=payload)
+
+        # Handle rate limits (429) or server overload (503)
+        if resp.status_code in (429, 503):
+            wait = _retry_secs(resp)
+            if wait > 10:
+                # If provider demands a long wait (>10s), trip breaker and fail fast rather than stalling
+                _CIRCUIT_BREAKER.record_failure(f"HTTP {resp.status_code} quota exceeded (retryDelay={wait:.0f}s)")
+                return None
+            print(f"[LLM {resp.status_code}] Quick retry in {wait:.0f}s…")
+            time.sleep(wait)
+            _LLM_LAST_CALL_AT = time.perf_counter()
+            resp = httpx.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {key}"}, timeout=timeout_s, json=payload)
+
+        # Fallback if provider doesn't support strict json_schema
+        if resp.status_code != 200:
+            payload["response_format"] = {"type": "json_object"}
+            payload["messages"] = [{"role": "user", "content": f"{prompt}\nRespond ONLY with a JSON object matching this schema:\n{json.dumps(schema)}"}]
+            resp = httpx.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {key}"}, timeout=timeout_s, json=payload)
+
+        if resp.status_code != 200:
+            err_msg = f"HTTP {resp.status_code}: {resp.text[:200]}"
+            print(f"[LLM Error] {err_msg}")
+            _CIRCUIT_BREAKER.record_failure(err_msg)
+            return None
+
+        content = resp.json()["choices"][0]["message"]["content"]
+        content = re.sub(r"^```(?:json)?\s*", "", content.strip())
+        content = re.sub(r"\s*```$", "", content)
+        parsed = json.loads(content)
+        _CIRCUIT_BREAKER.record_success()
+        if cache_file is not None:
+            try:
+                cache_file.parent.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(json.dumps(parsed))
+            except OSError:
+                pass
+        return parsed
+
+    except (httpx.TimeoutException, TimeoutError) as e:
+        print(f"[LLM Timeout] Call timed out after {timeout_s}s: {e}")
+        _CIRCUIT_BREAKER.record_failure(f"Timeout after {timeout_s}s")
+        return None
+    except Exception as e:
+        print(f"[LLM Exception]: {e}")
+        _CIRCUIT_BREAKER.record_failure(str(e))
         return None
 
 
@@ -134,7 +311,8 @@ def design_agent(profiles: dict, records: dict, trace: Trace) -> tuple[list[dict
                   "Systems: " + json.dumps([{k: p[k] for k in ("system_id", "interface", "capabilities", "limitations")} for p in profiles.values()]) +
                   "\nTargets: " + json.dumps({s: t["base"] for s, t in TARGETS.items()}) +
                   "\nSample records: " + json.dumps({s: r[0] for s, r in records.items() if r}, default=str))
-        trace.llm_calls += 1; answer = llm_json(prompt, schema, "integration_design")
+        design_model = os.getenv("OPENAI_MODEL", "qwen/qwen3.8-27b")
+        trace.llm_calls += 1; answer = llm_json(prompt, schema, "integration_design", model=design_model)
         if answer:
             proposed, mode = answer["mappings"], "llm"
             by_system = {p["system"]: p for p in answer["patterns"]}
@@ -203,17 +381,22 @@ def template_code(system: str, mappings: list[dict], fault: bool = False) -> str
 
 CODE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["code"], "properties": {"code": {"type": "string"}}}
 
-def llm_code(system: str, mappings: list[dict], sample: dict, previous: str | None = None, failures: list[str] | None = None) -> str | None:
+def llm_code(system: str, mappings: list[dict], sample: dict, previous: str | None = None, failures: list[str] | None = None,
+             hint: str = "", fresh: bool = False) -> str | None:
+    code_model = os.getenv("OPENAI_MODEL_LIGHT", os.getenv("OPENAI_MODEL", "openai/gpt-oss-20b"))
+    # Token optimization: strip verbose descriptions and unmapped fields
+    slim_mappings = [{"source": m["source_field"], "target": m["target_path"], "transform": m["transform"]} for m in mappings]
+    needed = {m["source_field"] for m in mappings}
+    slim_sample = {k: v for k, v in sample.items() if k in needed}
     prompt = (f"Write a standalone Python 3 module defining transform(record: dict) -> dict that converts one {system} record into a FHIR "
-              f"{TARGETS[system]['resource']}. Start from this skeleton and keep its fixed values: {json.dumps(TARGETS[system]['base'])}.\n"
-              f"Apply exactly these mappings (target_path is dotted, numbers are list indexes): {json.dumps(mappings)}.\n"
-              "Transform semantics: copy=as is; to_float=float; title_case=str.title(); hl7_date_to_iso=YYYYMMDD->YYYY-MM-DD; "
-              "hl7_sex_to_fhir=M/F/O->male/female/other.\n"
-              "Constraints: import only json, re or datetime; no file, network, eval or exec; read fields with record.get(); if a source "
-              "value is missing or malformed, omit that target field entirely instead of raising or passing the bad value through.\n"
-              f"Sample record: {json.dumps(sample, default=str)}\n")
-    if previous: prompt += f"\nYour previous attempt failed validation. Fix it.\nFailures: {json.dumps(failures)}\nPrevious code:\n{previous}\n"
-    answer = llm_json(prompt, CODE_SCHEMA, "adapter_code")
+              f"{TARGETS[system]['resource']}. Start from this skeleton: {json.dumps(TARGETS[system]['base'])}.\n"
+              f"Apply mappings: {json.dumps(slim_mappings)}.\n"
+              "Transforms: copy=as is; to_float=float; title_case=str.title(); hl7_date_to_iso=YYYYMMDD->YYYY-MM-DD; hl7_sex_to_fhir=M/F/O->male/female/other.\n"
+              "Constraints: import only json, re or datetime; no file/network/eval; use record.get(); omit missing target fields.\n"
+              f"Sample input: {json.dumps(slim_sample, default=str)}\n")
+    if previous: prompt += f"\nPrevious attempt failed. Fix these errors: {json.dumps(failures)}\nPrevious code:\n{previous}\n"
+    if hint: prompt += f"\nReviewer guidance (follow it): {hint[:500]}\n"
+    answer = llm_json(prompt, CODE_SCHEMA, "adapter_code", model=code_model, fresh=fresh)
     return answer["code"] if answer and "def transform" in answer.get("code", "") else None
 
 
@@ -300,6 +483,7 @@ def _report(system, checks):
 
 # ---------------------------------------------------------------- Orchestrator
 def run_agentic(patient_id: str = "ehr-pat-001", inject_fault: bool = False) -> dict:
+    _CIRCUIT_BREAKER.reset()  # Start each run with a fresh circuit state
     began = time.perf_counter(); trace = Trace()
     if patient_id not in core.CROSSWALK: raise ValueError("No documented synthetic EHR↔LIS crosswalk for this patient.")
 
@@ -342,8 +526,9 @@ def run_agentic(patient_id: str = "ehr-pat-001", inject_fault: bool = False) -> 
     agents_ok = all(r["passed"] for r in reports)
     result["agent_validation"] = reports
     result["validation"]["passed"] = result["validation"]["passed"] and agents_ok
-    if not result["validation"]["passed"]: result["status"] = "validation_failed"
-    trace.add("Orchestrator", "Stop at human approval gate", "policy", "Adapters validated; nothing is released until a reviewer approves the mappings and then the release." if agents_ok else "Validation failed; approval is blocked.", ok=agents_ok)
+    if not result["validation"]["passed"]: result["status"] = "needs_correction" if not agents_ok else "validation_failed"
+    result["audit"] = []
+    trace.add("Orchestrator", "Stop at human approval gate", "policy", "Adapters validated; nothing is released until a reviewer approves the mappings and then the release." if agents_ok else "Validation failed; approval is blocked until a reviewer retries, edits or replaces the failing adapter.", ok=agents_ok)
 
     out = ARTIFACTS_DIR / result["run_id"]; (out / "adapters").mkdir(parents=True, exist_ok=True)
     for system, code in adapters.items(): (out / "adapters" / f"{system}_adapter.py").write_text(code)
@@ -361,6 +546,71 @@ def run_agentic(patient_id: str = "ehr-pat-001", inject_fault: bool = False) -> 
                  "adapters_generated": len(adapters), "checks_passed": sum(c["passed"] for c in tests), "checks_total": len(tests),
                  "field_values_reconciled": f"{sum(r.get('field_values_matched', 0) for r in reports)}/{sum(r.get('field_values_total', 0) for r in reports)}",
                  "repair_attempts": repairs, "llm_calls": trace.llm_calls,
-                 "llm_model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini") if llm_available() else None,
-                 "mode": "llm-assisted" if llm_available() else "deterministic (no LLM key configured)"})
+                 "circuit_breaker": _CIRCUIT_BREAKER.state,
+                 "circuit_breaker_tripped": _CIRCUIT_BREAKER.state == "OPEN",
+                 "llm_model": f"{os.getenv('OPENAI_MODEL', 'qwen/qwen3.8-27b')} + {os.getenv('OPENAI_MODEL_LIGHT', 'openai/gpt-oss-20b')}" if llm_available() else None,
+                 "mode": "llm-assisted" if (llm_available() and _CIRCUIT_BREAKER.state != "OPEN") else "deterministic"})
     return result
+
+
+# ---------------------------------------------------------------- Reviewer-driven correction
+def audit(run: dict, actor: str, action: str, detail: str = ""):
+    run.setdefault("audit", []).append({"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "actor": actor, "action": action, "detail": detail})
+
+def refresh_run(run: dict, trace: Trace) -> dict:
+    """Recompute validation state, status, metrics and artefacts after any adapter change. Approvals are reset."""
+    reports = run["agent_validation"]; agents_ok = all(r["passed"] for r in reports)
+    identity_ok = all(c["passed"] for c in run["validation"]["checks"])
+    run["validation"]["passed"] = agents_ok and identity_ok
+    run["approvals"] = {"mapping_approved": False, "release_approved": False}
+    run["status"] = "awaiting_human_approval" if run["validation"]["passed"] else ("needs_correction" if not agents_ok else "validation_failed")
+    tests = [c for r in reports for c in r["checks"]]
+    run["trace"] = trace.events
+    run["metrics"].update(checks_passed=sum(c["passed"] for c in tests), checks_total=len(tests), llm_calls=trace.llm_calls,
+        field_values_reconciled=f"{sum(r.get('field_values_matched', 0) for r in reports)}/{sum(r.get('field_values_total', 0) for r in reports)}")
+    out = ARTIFACTS_DIR / run["run_id"]; (out / "adapters").mkdir(parents=True, exist_ok=True)
+    for system, code in run["adapters"].items(): (out / "adapters" / f"{system}_adapter.py").write_text(code)
+    (out / "agent-trace.json").write_text(json.dumps(trace.events, indent=2))
+    (out / "validation-report.json").write_text(json.dumps(reports, indent=2))
+    return run
+
+def _revalidate(run: dict, system: str, code: str, trace: Trace, started: float) -> dict:
+    spec = [m for m in run["plan"]["mappings"] if m["source_system"] == system]
+    records = sample_records(run["patient_key"])[system]
+    old = next(r for r in run["agent_validation"] if r["system"] == system)
+    report = validation_agent(system, code, spec, records); report["attempts"] = old.get("attempts", 1) + 1
+    trace.add("Validation Agent", f"Re-test {system} adapter in sandbox", "sandbox", report["summary"] + ("" if report["passed"] else " — " + next(c["detail"] for c in report["checks"] if not c["passed"])[:220]), started, ok=report["passed"])
+    run["adapters"][system] = code
+    run["agent_validation"] = [report if r["system"] == system else r for r in run["agent_validation"]]
+    return report
+
+def _trace_of(run: dict) -> Trace:
+    t = Trace(); t.events = list(run["trace"]); t.llm_calls = run["metrics"].get("llm_calls", 0); return t
+
+def retry_adapter(run: dict, system: str, strategy: str = "template", hint: str = "") -> dict:
+    """Reviewer asks for another attempt: 'ai' re-prompts the model with the failures (and optional guidance, bypassing the cache);
+    'template' regenerates from the approved mappings deterministically. Tests re-run and approvals reset either way."""
+    if system not in run["adapters"]: raise KeyError(system)
+    trace = _trace_of(run); spec = [m for m in run["plan"]["mappings"] if m["source_system"] == system]
+    old = next(r for r in run["agent_validation"] if r["system"] == system)
+    failures = [f"{c['name']}: {c['detail']}" for c in old["checks"] if not c["passed"]]
+    started = time.perf_counter(); fixed = None
+    if strategy == "ai" and llm_available():
+        _CIRCUIT_BREAKER.reset()  # an explicit reviewer request overrides a previously tripped breaker
+        fixed = llm_code(system, spec, sample_records(run["patient_key"])[system][0], run["adapters"][system], failures, hint=hint, fresh=True)
+        trace.llm_calls += 1
+    code = fixed or template_code(system, spec); mode = "llm" if fixed else "deterministic"
+    note = "" if (fixed or strategy != "ai") else " (AI unavailable or returned nothing; used the deterministic template)"
+    trace.add("Code Generation Agent", f"Reviewer-requested retry of {system} adapter", mode, ("Guidance: " + hint[:120] + " | " if hint else "") + "Regenerated from failures: " + " | ".join(failures)[:200] + note, started)
+    started = time.perf_counter(); report = _revalidate(run, system, code, trace, started)
+    audit(run, "reviewer", f"retry_{strategy}", f"{system}: {'passed' if report['passed'] else 'still failing'}" + (f" — {hint[:120]}" if hint else ""))
+    return refresh_run(run, trace)
+
+def submit_adapter_code(run: dict, system: str, code: str) -> dict:
+    """Reviewer supplies hand-edited adapter code. It goes through the same static scan, sandbox and reconciliation as generated code."""
+    if system not in run["adapters"]: raise KeyError(system)
+    trace = _trace_of(run); started = time.perf_counter()
+    trace.add("Reviewer", f"Submitted manual edit of {system} adapter", "human", f"{len(code.splitlines())} lines", started)
+    started = time.perf_counter(); report = _revalidate(run, system, code, trace, started)
+    audit(run, "reviewer", "manual_edit", f"{system}: {'passed' if report['passed'] else 'still failing'}")
+    return refresh_run(run, trace)
