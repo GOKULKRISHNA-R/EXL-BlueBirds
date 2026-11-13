@@ -1,0 +1,20 @@
+services:
+  integration-factory:
+    build: .
+    container_name: exl-integration-factory
+    ports:
+      - "8080:8080"
+    environment:
+      MOCK_SYSTEMS_DIR: /workspace/mockSystems
+      ARTIFACTS_DIR: /workspace/integration_factory/artifacts
+      EHR_BASE_URL: http://host.docker.internal:8000
+      EHR_API_TOKEN: ${EHR_API_TOKEN:-dev-ehr-token-change-me}
+      LIS_DSN: postgresql://lis_app:${LIS_PASSWORD:-lis_dev_password_change_me}@host.docker.internal:5433/lis
+      PACS_BASE_URL: http://host.docker.internal:8042
+      PACS_USERNAME: pacs_user
+      PACS_PASSWORD: ${PACS_PASSWORD:-pacs_dev_password_change_me}
+    volumes:
+      - ..:/workspace:ro
+      - ./artifacts:/workspace/integration_factory/artifacts
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
