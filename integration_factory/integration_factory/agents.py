@@ -68,8 +68,20 @@ PATTERN_RULES = [
 
 
 # ---------------------------------------------------------------- LLM helper
+def _llm_base() -> str:
+    """OpenAI-compatible base URL. Ollama's native '/api/chat' is mapped to its compatible '/v1' endpoint."""
+    base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/").removesuffix("/chat/completions")
+    return base.removesuffix("/api/chat").removesuffix("/api") + "/v1" if re.search(r"/api(/chat)?$", base) else base
+
+def _llm_is_local() -> bool:
+    return bool(re.match(r"https?://(localhost|127\.0\.0\.1|\[::1\])(:|/|$)", _llm_base()))
+
+def _llm_key() -> str:
+    """API key; local servers (Ollama, LM Studio, llama.cpp) don't need one, so a placeholder is used."""
+    return os.getenv("OPENAI_API_KEY", "").strip() or ("local" if _llm_is_local() else "")
+
 def llm_available() -> bool:
-    return bool(os.getenv("OPENAI_API_KEY", "").strip())
+    return bool(_llm_key())
 
 _LLM_LAST_CALL_AT: float = 0.0
 _LLM_MIN_INTERVAL: float = float(os.getenv("LLM_MIN_INTERVAL_S", "2"))  # default fast gap; adjust for free tiers
@@ -157,7 +169,7 @@ def llm_json(prompt: str, schema: dict, name: str, model: str | None = None, fre
     - Transparently falls back to deterministic code generation.
     """
     global _LLM_LAST_CALL_AT
-    key = os.getenv("OPENAI_API_KEY", "").strip()
+    key = _llm_key()
     if not key: return None
 
     # Circuit Breaker check: fail fast if upstream model is broken or timing out
@@ -165,10 +177,10 @@ def llm_json(prompt: str, schema: dict, name: str, model: str | None = None, fre
         print(f"[CircuitBreaker OPEN] Fast-failing LLM call '{name}' ({_CIRCUIT_BREAKER.last_failure_reason}). Using deterministic fallback.")
         return None
 
-    base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/").removesuffix("/chat/completions")
+    base = _llm_base()
     target_model = model or os.getenv("OPENAI_MODEL", "qwen/qwen3.8-27b")
-    timeout_s = float(os.getenv("LLM_TIMEOUT_S", "25"))
-    min_interval = float(os.getenv("LLM_MIN_INTERVAL_S", "2"))
+    timeout_s = float(os.getenv("LLM_TIMEOUT_S", "180" if _llm_is_local() else "25"))
+    min_interval = float(os.getenv("LLM_MIN_INTERVAL_S", "0" if _llm_is_local() else "2"))
 
     # Response cache: temperature is 0, so an identical (model, prompt, schema) is an exact repeat.
     # Skips the network call, rate-limit sleep and tokens entirely. Off in tests or with LLM_CACHE=0.

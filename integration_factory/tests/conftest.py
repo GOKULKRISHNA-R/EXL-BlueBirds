@@ -12,3 +12,4 @@ def _no_live_llm(monkeypatch):
     """config.py reloads .env (override=True) when the package is imported, which restores the key.
     Remove it per test so nothing calls the live provider."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)  # a localhost base URL would enable the LLM without a key
