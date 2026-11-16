@@ -44,6 +44,33 @@ button.danger{background:var(--bad)}button.green{background:var(--ok)}
 #toast{position:fixed;right:18px;bottom:18px;max-width:420px;padding:12px 16px;border-radius:9px;color:#fff;background:var(--head);box-shadow:0 6px 24px #0004;display:none;z-index:9}
 #toast.bad{background:var(--bad)}#toast.good{background:var(--ok)}
 .log td{font-size:13px}
+
+/* visual polish */
+body{font:15px/1.5 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;background:linear-gradient(180deg,#eaf1f8 0,#f3f6fa 320px);-webkit-font-smoothing:antialiased}
+header{background:linear-gradient(120deg,#0f2236 0,#142b43 45%,#1769aa 130%);padding:30px max(5vw,calc((100vw - 1100px)/2 + 16px));color:#c9dcee;font-size:13.5px;letter-spacing:.02em;box-shadow:0 2px 14px #0f223633}
+header h1{font-size:27px;letter-spacing:-.01em;color:#fff;margin:0 0 6px}
+main{margin:26px auto 60px}
+.card{border-radius:16px;padding:24px;margin:16px 0;border-color:#e3eaf2;box-shadow:0 1px 2px #14213d0a,0 8px 24px #14213d0d}
+h2{font-size:19px;letter-spacing:-.01em;margin:0 0 14px}
+.grid{gap:14px}
+.tile{border-radius:12px;overflow-wrap:anywhere;min-width:0;padding:14px 16px;background:linear-gradient(180deg,#fff,#f8fbfe);border-color:#e3eaf2;transition:transform .15s,box-shadow .15s}
+.tile:hover{transform:translateY(-2px);box-shadow:0 6px 18px #14213d14}
+.num{font-size:26px;font-weight:700;color:var(--brand);letter-spacing:-.01em}
+button{padding:11px 18px;border-radius:9px;font-weight:600;box-shadow:0 1px 2px #14213d26;transition:filter .15s,transform .05s}
+button:hover:not(:disabled){filter:brightness(1.08)}button:active:not(:disabled){transform:translateY(1px)}
+button.alt{box-shadow:none}button.alt:hover:not(:disabled){background:#eef5fc;filter:none}
+button:focus-visible,select:focus-visible,summary:focus-visible{outline:3px solid #9cc8ec;outline-offset:2px}
+select{padding:10px 12px;border-radius:9px;background:#fff}
+.tag{font-weight:600;padding:3px 10px;background:#f4f7fb}
+.tag.llm{background:#f3f0fd}.tag.fault_injected{background:#fdf1f0}.tag.sandbox{color:#0b6b6b;border-color:#b5dede;background:#eefafa}
+.step{padding:12px 0;align-items:start}
+.dot{box-shadow:0 0 0 4px #1a7f4b1f}.dot.fail{box-shadow:0 0 0 4px #b3261e1f}
+th{font-size:12px;text-transform:uppercase;letter-spacing:.05em;background:#f6f9fc}
+th,td{padding:9px 11px}tbody tr:hover td{background:#fafcfe}
+pre{border-radius:10px;padding:16px;line-height:1.55}
+.status{border-radius:99px;padding:5px 12px}
+.st{border-radius:10px;padding:10px 12px}
+.banner{border-radius:12px;padding:16px 18px}
 </style></head>
 <body>
 <header><h1>Agentic Healthcare Integration Factory</h1>EXL × UCD · Challenge 01 · Synthetic data only</header>
